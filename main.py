@@ -4,29 +4,39 @@ import pandas as pd
 import random
 from datetime import datetime, timedelta
 
-from constants import (
+from src.constants import (
     PRIMARY_COLOR, SELECTED_PRIMARY_COLOR, DEFAULT_TICKERS_LIST,
     TICKERS_SELECTION_COLORS, DEFAULT_START_DATE, DEFAULT_END_DATE, DATA_FOLDER_PATH
 )
-from data_utils import (
+from src.data_utils import (
     check_and_download_default_data, download_pair_data,
     is_valid_ticker
 )
-from stats_utils import calculate_pair_statistics
-from plot_utils import create_pair_plot, create_single_plot
+from src.stats_utils import calculate_pair_statistics
+from src.plot_utils import create_pair_plot, create_single_plot
+
+def clear_session_state():
+    """Clear all session state variables"""
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+
+# Clear session state on first load
+if 'initialized' not in st.session_state:
+    clear_session_state()
+    st.session_state.initialized = True
 
 # Set page config to use full width
 st.set_page_config(layout="wide")
 
-# Initialize session state variables
+# Initialize session state variables with default values
 if 'selected_ticker' not in st.session_state:
     st.session_state.selected_ticker = "default"
 
 if "ticker_list" not in st.session_state:
-    st.session_state.ticker_list = DEFAULT_TICKERS_LIST
+    st.session_state.ticker_list = DEFAULT_TICKERS_LIST.copy()
 
 if "ticker_color_map" not in st.session_state:
-    st.session_state.ticker_color_map = TICKERS_SELECTION_COLORS
+    st.session_state.ticker_color_map = TICKERS_SELECTION_COLORS.copy()
 
 if "clear_input" not in st.session_state:
     st.session_state.clear_input = False
@@ -76,7 +86,7 @@ div.stButton > button:first-child {
 check_and_download_default_data()
 
 # Top Row
-col1, col2, col3, col4, col5, col6, col7 = st.columns([1, 1, 1, 3, 0.2, 2.6, 0.2])
+col1, col2, col3, col4, col5, col6 = st.columns([1, 1, 1, 3, 0.2, 2.6])
 
 # Dates
 with col1:

@@ -1,7 +1,7 @@
 import plotly.graph_objects as go
-from data_utils import download_stock_data
+from src.data_utils import download_stock_data
 import pandas as pd
-from constants import DATA_FOLDER_PATH
+from src.constants import DATA_FOLDER_PATH
 
 def create_pair_plot(pair_data, ticker1, ticker2):
     """Create a plot for a pair of stocks"""

@@ -1,6 +1,6 @@
 import pandas as pd
 import yfinance as yf
-from constants import DEFAULT_TICKERS_LIST, DEFAULT_START_DATE, DEFAULT_END_DATE, DATA_FOLDER_PATH
+from src.constants import DEFAULT_TICKERS_LIST, DEFAULT_START_DATE, DEFAULT_END_DATE, DATA_FOLDER_PATH
 
 def get_last_market_day(end_date):
     """Get the last market day before or on the given date"""
