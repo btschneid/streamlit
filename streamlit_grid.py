@@ -54,9 +54,50 @@ if 'show_error' not in st.session_state:
 if 'error_message' not in st.session_state:
     st.session_state.error_message = "⚠️ ERROR ⚠️"
 
+def get_last_market_day(end_date):
+    """Get the last market day before or on the given date"""
+    # Convert to datetime and subtract one day to start checking
+    check_date = pd.to_datetime(end_date).tz_localize('UTC') - pd.Timedelta(days=1)
+    
+    # Try up to 5 days back (to account for weekends and holidays)
+    for _ in range(5):
+        # Check if this date exists in any of our default tickers' data
+        for ticker in DEFAULT_TICKERS_LIST:
+            try:
+                df = pd.read_csv(f'{ticker}.csv')
+                df['date'] = pd.to_datetime(df['date'], utc=True)
+                if check_date.date() in df['date'].dt.date.values:
+                    return check_date.date()
+            except (FileNotFoundError, KeyError, ValueError):
+                continue
+        # If not found, go back one more day
+        check_date = check_date - pd.Timedelta(days=1)
+    
+    # If we can't find a market day, return the original end date minus 1 day
+    return (pd.to_datetime(end_date).tz_localize('UTC') - pd.Timedelta(days=1)).date()
+
 def download_stock_data(ticker, start_date, end_date):
     """Download stock data from Yahoo Finance and save to CSV"""
     try:
+        # First check if we already have the data
+        try:
+            df = pd.read_csv(f'{ticker}.csv')
+            df['date'] = pd.to_datetime(df['date'], utc=True)
+            
+            # Convert input dates to UTC and get just the date part
+            start_timestamp = pd.to_datetime(start_date).tz_localize('UTC').date()
+            end_timestamp = get_last_market_day(end_date)
+            
+            # Get just the date part from the dataframe
+            df_dates = df['date'].dt.date
+            
+            # Check if we have data covering the requested range
+            if df_dates.min() <= start_timestamp and df_dates.max() >= end_timestamp:
+                return True  # We already have the data we need
+        except (FileNotFoundError, KeyError, ValueError):
+            pass  # If any error occurs, we'll download fresh data
+        
+        # If we don't have the data, download it
         stock = yf.Ticker(ticker)
 
         # Download historical data
@@ -77,21 +118,7 @@ def download_stock_data(ticker, start_date, end_date):
 def check_and_download_default_data():
     """Check and download data for default tickers if not already present"""
     for ticker in DEFAULT_TICKERS_LIST:
-        try:
-            # Try to read the CSV file
-            df = pd.read_csv(f'{ticker}.csv')
-            df['date'] = pd.to_datetime(df['date'], utc=True)
-            
-            # Check if data covers the required date range
-            start_date = pd.to_datetime(DEFAULT_START_DATE).tz_localize('UTC')
-            end_date = pd.to_datetime(DEFAULT_END_DATE).tz_localize('UTC')
-            
-            if df['date'].min() > start_date or df['date'].max() < end_date:
-                # If date range is insufficient, download fresh data
-                download_stock_data(ticker, DEFAULT_START_DATE, DEFAULT_END_DATE)
-        except (FileNotFoundError, KeyError, ValueError):
-            # If file doesn't exist or has invalid format, download the data
-            download_stock_data(ticker, DEFAULT_START_DATE, DEFAULT_END_DATE)
+        download_stock_data(ticker, DEFAULT_START_DATE, DEFAULT_END_DATE)
 
 def download_pair_data(ticker1, ticker2, start_date, end_date):
     # Download data for both tickers if needed
