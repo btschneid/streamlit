@@ -7,11 +7,13 @@ import random
 from datetime import datetime, timedelta
 import yfinance as yf
 import time
+import statsmodels.api as sm
+from statsmodels.tsa.stattools import adfuller
 
 PRIMARY_COLOR = "#ff4b4b"
 SELECTED_PRIMARY_COLOR = "#b83232"
 
-DEFAULT_TICKERS_LIST = ["AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "TSLA"]
+DEFAULT_TICKERS_LIST = ["AAPL", "MSFT", "GOOG", "NVDA", "TSLA"]
 TICKERS_SELECTION_COLORS = {ticker: PRIMARY_COLOR for ticker in DEFAULT_TICKERS_LIST}
 
 DEFAULT_START_DATE = "2016-01-04"
@@ -53,6 +55,16 @@ if 'show_error' not in st.session_state:
 
 if 'error_message' not in st.session_state:
     st.session_state.error_message = "⚠️ ERROR ⚠️"
+
+st.markdown("""
+<style>
+div.stButton > button:first-child {
+    width: 70%;
+    margin: 0 auto;
+    display: block;
+}
+</style>
+""", unsafe_allow_html=True)
 
 def get_last_market_day(end_date):
     """Get the last market day before or on the given date"""
@@ -263,10 +275,13 @@ def is_valid_ticker(ticker):
 # Check and download default ticker data on launch
 check_and_download_default_data()
 
+# ==============================================================================
+
 # Top Row
 
 col1, col2, col3, col4, col5, col6, col7 = st.columns([1, 1, 1, 3, 0.7, 1.6, 0.7])
 
+# Dates
 with col1:
     start_date = st.date_input(
         "Start Date",
@@ -292,20 +307,6 @@ with col2:
 
     st.session_state.end_date = end_date
 
-# ==============================================================================
-
-# Top-level layout
-
-st.markdown("""
-<style>
-div.stButton > button:first-child {
-    width: 70%;
-    margin: 0 auto;
-    display: block;
-}
-</style>
-""", unsafe_allow_html=True)
-
 # Title
 with col4:
     st.markdown("<div style='text-align: center;'><h1>Risk Engine Simulator</h1></div>", unsafe_allow_html=True)
@@ -329,15 +330,14 @@ with col6:
 # ==============================================================================
 
 # Main content area
+
 col1, col2 = st.columns([2, 1])
 
-# Display the plot
-
+# Plot
 with col1:
     st.plotly_chart(create_plot(), use_container_width=True)
 
 # Ticker List
-
 with col2:
     # Input field for new ticker
     col_input, col_add = st.columns([3, 1])
@@ -371,8 +371,7 @@ with col2:
                         st.rerun()
 
     
-    # Use Streamlit's built-in container with height parameter
-    ticker_container = st.container(height=355)
+    ticker_container = st.container(height=305)
     
     with ticker_container:
         # Display ticker buttons inside the scrollable container
@@ -436,13 +435,130 @@ with col2:
 # ==============================================================================
 
 # Bottom Section
-col1, col2 = st.columns([2, 1])
+col1, col2 = st.columns([3, 1])
 
 # Statistics section
 with col1:
-    pass
-    #st.markdown("<div style='text-align: center;'><h3>Statistics</h3></div>", unsafe_allow_html=True)
-    # Add your statistics content here
+    # Create 3 rows of statistics
+    for row in range(3):
+        cols = st.columns(4)
+        for col in range(4):
+            with cols[col]:
+                if hasattr(st.session_state, 'pair_data') and not st.session_state.pair_data.empty:
+                    ticker1 = st.session_state.ticker_pair[0]
+                    ticker2 = st.session_state.ticker_pair[1]
+                    
+                    # Calculate returns and spreads
+                    returns1 = st.session_state.pair_data[f'adj_close_{ticker1}'].pct_change()
+                    returns2 = st.session_state.pair_data[f'adj_close_{ticker2}'].pct_change()
+                    spread = st.session_state.pair_data[f'adj_close_{ticker1}'] - st.session_state.pair_data[f'adj_close_{ticker2}']
+                    
+                    # Calculate hedge ratio (beta) using OLS regression
+                    X = sm.add_constant(st.session_state.pair_data[f'adj_close_{ticker2}'])
+                    y = st.session_state.pair_data[f'adj_close_{ticker1}']
+                    model = sm.OLS(y, X).fit()
+                    beta = model.params.iloc[1]  # Get the second parameter (beta)
+                    
+                    # Calculate ADF test statistics
+                    adf_result = adfuller(spread.dropna())
+                    adf_stat = adf_result[0]
+                    p_value = adf_result[1]
+                    
+                    # Calculate half-life of mean reversion
+                    spread_lag = spread.shift(1)
+                    spread_ret = spread - spread_lag
+                    spread_lag = spread_lag.dropna()
+                    spread_ret = spread_ret.dropna()
+                    half_life_model = sm.OLS(spread_ret, sm.add_constant(spread_lag)).fit()
+                    half_life = -np.log(2) / half_life_model.params.iloc[1] if half_life_model.params.iloc[1] < 0 else np.nan
+                    
+                    # Calculate z-score
+                    z_score = (spread - spread.mean()) / spread.std()
+                    current_z = z_score.iloc[-1]
+                    
+                    # Calculate number of trades (crossings of mean)
+                    mean_crossings = np.sum(np.diff(np.signbit(spread - spread.mean())))
+                    
+                    if row == 0:
+                        if col == 0:
+                            cum_return = (st.session_state.pair_data[f'adj_close_{ticker1}'].iloc[-1] / 
+                                       st.session_state.pair_data[f'adj_close_{ticker1}'].iloc[0] - 1) * 100
+                            st.metric("Cumulative Return", f"{cum_return:.2f}%")
+                        elif col == 1:
+                            annual_return = ((1 + cum_return/100) ** (252/len(st.session_state.pair_data)) - 1) * 100
+                            st.metric("Annualized Return", f"{annual_return:.2f}%")
+                        elif col == 2:
+                            vol = returns1.std() * np.sqrt(252) * 100
+                            sharpe = annual_return / vol if vol != 0 else 0
+                            st.metric("Sharpe Ratio", f"{sharpe:.2f}")
+                        else:
+                            max_drawdown = ((st.session_state.pair_data[f'adj_close_{ticker1}'] / 
+                                          st.session_state.pair_data[f'adj_close_{ticker1}'].expanding().max() - 1) * 100).min()
+                            st.metric("Max Drawdown", f"{max_drawdown:.2f}%")
+                    elif row == 1:
+                        if col == 0:
+                            st.metric("Beta (Hedge Ratio)", f"{beta:.4f}")
+                        elif col == 1:
+                            st.metric("P-value", f"{p_value:.4f}")
+                        elif col == 2:
+                            st.metric("ADF Statistic", f"{adf_stat:.4f}")
+                        else:
+                            st.metric("Half-life (days)", f"{half_life:.1f}" if not np.isnan(half_life) else "N/A")
+                    else:
+                        if col == 0:
+                            st.metric("Mean of Spread", f"{spread.mean():.2f}")
+                        elif col == 1:
+                            st.metric("Std Dev of Spread", f"{spread.std():.2f}")
+                        elif col == 2:
+                            st.metric("Z-score (Current)", f"{current_z:.2f}")
+                        else:
+                            st.metric("# of Trades", f"{mean_crossings}")
+                else:
+                    # Single ticker statistics
+                    ticker = DEFAULT_TICKERS_LIST[0]
+                    df = pd.read_csv(f'{ticker}.csv')
+                    df['date'] = pd.to_datetime(df['date'], utc=True)
+                    
+                    # Filter data based on selected date range
+                    start_timestamp = pd.Timestamp(st.session_state.start_date).tz_localize('UTC')
+                    end_timestamp = pd.Timestamp(st.session_state.end_date).tz_localize('UTC')
+                    mask = (df['date'] >= start_timestamp) & (df['date'] <= end_timestamp)
+                    df = df.loc[mask]
+                    
+                    returns = df['adj_close'].pct_change()
+                    
+                    if row == 0:
+                        if col == 0:
+                            cum_return = (df['adj_close'].iloc[-1] / df['adj_close'].iloc[0] - 1) * 100
+                            st.metric("Cumulative Return", f"{cum_return:.2f}%")
+                        elif col == 1:
+                            annual_return = ((1 + cum_return/100) ** (252/len(df)) - 1) * 100
+                            st.metric("Annualized Return", f"{annual_return:.2f}%")
+                        elif col == 2:
+                            vol = returns.std() * np.sqrt(252) * 100
+                            sharpe = annual_return / vol if vol != 0 else 0
+                            st.metric("Sharpe Ratio", f"{sharpe:.2f}")
+                        else:
+                            max_drawdown = ((df['adj_close'] / df['adj_close'].expanding().max() - 1) * 100).min()
+                            st.metric("Max Drawdown", f"{max_drawdown:.2f}%")
+                    elif row == 1:
+                        if col == 0:
+                            st.metric("Beta (Hedge Ratio)", "N/A")
+                        elif col == 1:
+                            st.metric("P-value", "N/A")
+                        elif col == 2:
+                            st.metric("ADF Statistic", "N/A")
+                        else:
+                            st.metric("Half-life (days)", "N/A")
+                    else:
+                        if col == 0:
+                            st.metric("Mean of Spread", "N/A")
+                        elif col == 1:
+                            st.metric("Std Dev of Spread", "N/A")
+                        elif col == 2:
+                            st.metric("Z-score (Current)", "N/A")
+                        else:
+                            st.metric("# of Trades", "N/A")
 
 with col2:
     if st.session_state.show_error:
