@@ -1,39 +1,33 @@
 import streamlit as st
 import streamlit.components.v1 as components
-import plotly.graph_objects as go
 import pandas as pd
-import numpy as np
 import random
 from datetime import datetime, timedelta
-import yfinance as yf
-import time
-import statsmodels.api as sm
-from statsmodels.tsa.stattools import adfuller
 
-PRIMARY_COLOR = "#ff4b4b"
-SELECTED_PRIMARY_COLOR = "#b83232"
-
-DEFAULT_TICKERS_LIST = ["AAPL", "MSFT", "GOOG", "NVDA", "TSLA", "AMZN"]
-TICKERS_SELECTION_COLORS = {ticker: PRIMARY_COLOR for ticker in DEFAULT_TICKERS_LIST}
-
-DEFAULT_START_DATE = "2016-01-04"
-DEFAULT_END_DATE = datetime.today().strftime("%Y-%m-%d")
+from constants import (
+    PRIMARY_COLOR, SELECTED_PRIMARY_COLOR, DEFAULT_TICKERS_LIST,
+    TICKERS_SELECTION_COLORS, DEFAULT_START_DATE, DEFAULT_END_DATE, DATA_FOLDER_PATH
+)
+from data_utils import (
+    check_and_download_default_data, download_pair_data,
+    is_valid_ticker
+)
+from stats_utils import calculate_pair_statistics
+from plot_utils import create_pair_plot, create_single_plot
 
 # Set page config to use full width
 st.set_page_config(layout="wide")
 
-# Initialize session state for selected ticker if not exists
+# Initialize session state variables
 if 'selected_ticker' not in st.session_state:
     st.session_state.selected_ticker = "default"
 
-# Initialize session state for ticker list
 if "ticker_list" not in st.session_state:
-    st.session_state.ticker_list = DEFAULT_TICKERS_LIST  # Default tickers
+    st.session_state.ticker_list = DEFAULT_TICKERS_LIST
 
 if "ticker_color_map" not in st.session_state:
     st.session_state.ticker_color_map = TICKERS_SELECTION_COLORS
 
-# Initialize a flag to clear input
 if "clear_input" not in st.session_state:
     st.session_state.clear_input = False
 
@@ -41,7 +35,6 @@ if "ticker_pair" not in st.session_state:
     st.session_state.ticker_pair = ["", ""]
 
 if "pair_data" not in st.session_state:
-    # Initialize with empty dataframe with correct columns
     st.session_state.pair_data = pd.DataFrame(columns=['date', 'adj_close_TICKER1', 'vol_TICKER1', 'adj_close_TICKER2', 'vol_TICKER2'])
 
 if "start_date" not in st.session_state:
@@ -56,7 +49,6 @@ if 'show_error' not in st.session_state:
 if 'error_message' not in st.session_state:
     st.session_state.error_message = "⚠️ ERROR ⚠️"
 
-# Add new session state variables for tracking updates
 if 'last_start_date' not in st.session_state:
     st.session_state.last_start_date = DEFAULT_START_DATE
 
@@ -69,6 +61,7 @@ if 'should_update_stats' not in st.session_state:
 if 'input_counter' not in st.session_state:
     st.session_state.input_counter = 0
 
+# Custom CSS
 st.markdown("""
 <style>
 div.stButton > button:first-child {
@@ -79,219 +72,10 @@ div.stButton > button:first-child {
 </style>
 """, unsafe_allow_html=True)
 
-def get_last_market_day(end_date):
-    """Get the last market day before or on the given date"""
-    # Convert to datetime and subtract one day to start checking
-    check_date = pd.to_datetime(end_date).tz_localize('UTC') - pd.Timedelta(days=1)
-    
-    # Try up to 5 days back (to account for weekends and holidays)
-    for _ in range(5):
-        # Check if this date exists in any of our default tickers' data
-        for ticker in DEFAULT_TICKERS_LIST:
-            try:
-                df = pd.read_csv(f'{ticker}.csv')
-                df['date'] = pd.to_datetime(df['date'], utc=True)
-                if check_date.date() in df['date'].dt.date.values:
-                    return check_date.date()
-            except (FileNotFoundError, KeyError, ValueError):
-                continue
-        # If not found, go back one more day
-        check_date = check_date - pd.Timedelta(days=1)
-    
-    # If we can't find a market day, return the original end date minus 1 day
-    return (pd.to_datetime(end_date).tz_localize('UTC') - pd.Timedelta(days=1)).date()
-
-def download_stock_data(ticker, start_date, end_date):
-    """Download stock data from Yahoo Finance and save to CSV"""
-    try:
-        # First check if we already have the data
-        try:
-            df = pd.read_csv(f'{ticker}.csv')
-            df['date'] = pd.to_datetime(df['date'], utc=True)
-            
-            # Convert input dates to UTC and get just the date part
-            start_timestamp = pd.to_datetime(start_date).tz_localize('UTC').date()
-            end_timestamp = get_last_market_day(end_date)
-            
-            # Get just the date part from the dataframe
-            df_dates = df['date'].dt.date
-            
-            # Check if we have data covering the requested range
-            if df_dates.min() <= start_timestamp and df_dates.max() >= end_timestamp:
-                return True  # We already have the data we need
-        except (FileNotFoundError, KeyError, ValueError):
-            pass  # If any error occurs, we'll download fresh data
-        
-        # If we don't have the data, download it
-        stock = yf.Ticker(ticker)
-
-        # Download historical data
-        hist_data = stock.history(start=start_date, end=end_date, auto_adjust=False)
-
-        # Select and rename columns to follow financial industry conventions
-        df = hist_data[['Adj Close', 'Volume']].copy()
-        df.columns = ['adj_close', 'vol']
-        df.index.name = 'date'
-        
-        # Save to CSV
-        df.to_csv(f'{ticker}.csv')
-        return True
-    except Exception as e:
-        st.error(f"Error downloading data for {ticker}: {str(e)}")
-        return False
-
-def check_and_download_default_data():
-    """Check and download data for default tickers if not already present"""
-    for ticker in DEFAULT_TICKERS_LIST:
-        download_stock_data(ticker, DEFAULT_START_DATE, DEFAULT_END_DATE)
-
-def download_pair_data(ticker1, ticker2, start_date, end_date):
-    # Download data for both tickers if needed
-    download_stock_data(ticker1, start_date, end_date)
-    download_stock_data(ticker2, start_date, end_date)
-    
-    # Download data for both tickers
-    df1 = pd.read_csv(f'{ticker1}.csv')
-    df2 = pd.read_csv(f'{ticker2}.csv')
-    
-    # Convert dates to datetime with UTC
-    df1['date'] = pd.to_datetime(df1['date'], utc=True)
-    df2['date'] = pd.to_datetime(df2['date'], utc=True)
-    
-    # Filter by date range
-    start_timestamp = pd.Timestamp(start_date).tz_localize('UTC')
-    end_timestamp = pd.Timestamp(end_date).tz_localize('UTC')
-    
-    mask1 = (df1['date'] >= start_timestamp) & (df1['date'] <= end_timestamp)
-    mask2 = (df2['date'] >= start_timestamp) & (df2['date'] <= end_timestamp)
-    
-    df1 = df1.loc[mask1]
-    df2 = df2.loc[mask2]
-    
-    # Add ticker suffix to columns
-    df1 = df1.add_suffix(f'_{ticker1}')
-    df2 = df2.add_suffix(f'_{ticker2}')
-    
-    # Merge the dataframes on date
-    df1 = df1.rename(columns={f'date_{ticker1}': 'date'})
-    df2 = df2.rename(columns={f'date_{ticker2}': 'date'})
-    
-    merged_df = pd.merge(df1, df2, on='date', how='inner')
-    
-    return merged_df
-
-def create_plot():
-    # If we have pair data, show both tickers
-    if hasattr(st.session_state, 'pair_data') and not st.session_state.pair_data.empty:
-        ticker1 = st.session_state.ticker_pair[0]
-        ticker2 = st.session_state.ticker_pair[1]
-        
-        # Create a line graph using Plotly with both tickers
-        fig = go.Figure()
-        
-        # Add first ticker
-        fig.add_trace(go.Scatter(
-            x=st.session_state.pair_data['date'],
-            y=st.session_state.pair_data[f'adj_close_{ticker1}'],
-            mode='lines',
-            name=f'{ticker1}',
-            line=dict(color='#2ecc71', width=2)
-        ))
-        
-        # Add second ticker
-        fig.add_trace(go.Scatter(
-            x=st.session_state.pair_data['date'],
-            y=st.session_state.pair_data[f'adj_close_{ticker2}'],
-            mode='lines',
-            name=f'{ticker2}',
-            line=dict(color='#e74c3c', width=2)
-        ))
-
-        fig.update_layout(
-            template="plotly_dark",
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            margin=dict(l=0, r=0, t=0, b=0),
-            height=400,
-            showlegend=True,
-            xaxis_title="Date",
-            yaxis_title="Adj Close ($)",
-            legend=dict(
-                x=0.07,
-                y=1,
-                xanchor='right',
-                yanchor='bottom'
-            )
-        )
-        
-        return fig
-    
-    # If no pair data, show first default ticker
-    ticker = DEFAULT_TICKERS_LIST[0]
-    
-    # Download data if needed
-    download_stock_data(ticker, st.session_state.start_date, st.session_state.end_date)
-    
-    df = pd.read_csv(f'{ticker}.csv')
-    
-    # Convert date column to datetime with UTC
-    df['date'] = pd.to_datetime(df['date'], utc=True)
-    
-    # Filter data based on selected date range
-    start_timestamp = pd.Timestamp(st.session_state.start_date).tz_localize('UTC')
-    end_timestamp = pd.Timestamp(st.session_state.end_date).tz_localize('UTC')
-    mask = (df['date'] >= start_timestamp) & (df['date'] <= end_timestamp)
-    df = df.loc[mask]
-    
-    # Create a line graph using Plotly
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df['date'],
-        y=df['adj_close'],
-        mode='lines',
-        name=f'{ticker}',
-        line=dict(color='#2ecc71', width=2)
-    ))
-
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        margin=dict(l=0, r=0, t=0, b=0),
-        height=400,
-        showlegend=True,
-        xaxis_title="Date",
-        yaxis_title="Adj Close ($)",
-        legend=dict(
-            x=0.07,
-            y=1,
-            xanchor='right',
-            yanchor='bottom'
-        )
-    )
-    
-    return fig
-
-def update_ticker(ticker):
-    st.session_state.selected_ticker = ticker
-
-def is_valid_ticker(ticker):
-    """Check if ticker exists on Yahoo Finance"""
-    try:
-        stock = yf.Ticker(ticker)
-        # Try to get info, if it fails the ticker doesn't exist
-        info = stock.info
-        return True
-    except:
-        return False
-
 # Check and download default ticker data on launch
 check_and_download_default_data()
 
-# ==============================================================================
-
 # Top Row
-
 col1, col2, col3, col4, col5, col6, col7 = st.columns([1, 1, 1, 3, 0.2, 2.6, 0.2])
 
 # Dates
@@ -303,11 +87,9 @@ with col1:
         max_value=datetime.today()
     )
 
-    # Check if start date changed
     if start_date != st.session_state.last_start_date:
         st.session_state.state_date = start_date
         st.session_state.last_start_date = start_date
-        # Update pair data if we have a pair selected
         if st.session_state.ticker_pair[0] != "" and st.session_state.ticker_pair[1] != "":
             pair_data = download_pair_data(
                 st.session_state.ticker_pair[0],
@@ -320,7 +102,6 @@ with col1:
     st.session_state.start_date = start_date
 
 with col2:
-    # Calculate default end date value
     default_end = datetime.strptime(DEFAULT_END_DATE, "%Y-%m-%d").date()
     if default_end < st.session_state.start_date:
         default_end = st.session_state.start_date + timedelta(days=1)
@@ -332,11 +113,9 @@ with col2:
         max_value=datetime.today().date()
     )
 
-    # Check if end date changed
     if end_date != st.session_state.last_end_date:
         st.session_state.end_date = end_date
         st.session_state.last_end_date = end_date
-        # Update pair data if we have a pair selected
         if st.session_state.ticker_pair[0] != "" and st.session_state.ticker_pair[1] != "":
             pair_data = download_pair_data(
                 st.session_state.ticker_pair[0],
@@ -354,10 +133,8 @@ with col4:
 
 # Run Button
 with col6:
-
     if st.button("Find Best Cointegrated Pair", key="Test", type="secondary"):
         if len(st.session_state.ticker_list) >= 2:
-            # Get two random different indices
             indices = random.sample(range(len(st.session_state.ticker_list)), 2)
             ticker1 = st.session_state.ticker_list[indices[0]]
             ticker2 = st.session_state.ticker_list[indices[1]]
@@ -372,7 +149,6 @@ with col6:
             st.session_state.ticker_color_map[ticker1] = SELECTED_PRIMARY_COLOR
             st.session_state.ticker_color_map[ticker2] = SELECTED_PRIMARY_COLOR
 
-            # Download and process the pair data
             pair_data = download_pair_data(
                 ticker1, 
                 ticker2, 
@@ -380,15 +156,13 @@ with col6:
                 st.session_state.end_date
             )
             
-            # Store the pair data in session state
             st.session_state.pair_data = pair_data
             st.session_state.should_update_stats = True
 
             st.rerun()
     
     if st.session_state.show_error:
-        # Use the same column structure as your input row
-        col1, col2, col3 = st.columns([1, 6, 1])  # Match your input layout
+        col1, col2, col3 = st.columns([1, 6, 1])
         with col2:
             st.markdown(f"""
                 <div style="
@@ -408,17 +182,24 @@ with col6:
                     {st.session_state.error_message}
                 </div>
             """, unsafe_allow_html=True)
-    
-
-# ==============================================================================
 
 # Main content area
-
 col1, col2 = st.columns([2, 1])
 
 # Plot
 with col1:
-    st.plotly_chart(create_plot(), use_container_width=True)
+    if hasattr(st.session_state, 'pair_data') and not st.session_state.pair_data.empty:
+        st.plotly_chart(create_pair_plot(
+            st.session_state.pair_data,
+            st.session_state.ticker_pair[0],
+            st.session_state.ticker_pair[1]
+        ), use_container_width=True)
+    else:
+        st.plotly_chart(create_single_plot(
+            DEFAULT_TICKERS_LIST[0],
+            st.session_state.start_date,
+            st.session_state.end_date
+        ), use_container_width=True)
 
 with col2:
     # Input field for new ticker
@@ -439,25 +220,21 @@ with col2:
                     if is_valid_ticker(new_ticker.upper()):
                         st.session_state.ticker_list.append(new_ticker.upper())
                         st.session_state.ticker_color_map[new_ticker.upper()] = PRIMARY_COLOR
-                        st.session_state.input_counter += 1  # This creates a new input widget
+                        st.session_state.input_counter += 1
                         st.session_state.show_error = False
                         st.rerun()
                     else:
                         st.session_state.error_message = f"⚠️ Ticker '{new_ticker.upper()}' does not exist on Yahoo Finance ⚠️"
                         st.session_state.show_error = True
-                        # Don't increment counter - input stays with current value
                         st.rerun()
                 else:
                     st.session_state.error_message = f"⚠️ Ticker '{new_ticker.upper()}' is already in the list ⚠️"
                     st.session_state.show_error = True
-                    # Don't increment counter - input stays with current value
                     st.rerun()
 
-    
     ticker_container = st.container(height=355)
     
     with ticker_container:
-        # Display ticker buttons inside the scrollable container
         for ticker in st.session_state.ticker_list:
             col_btn, col_remove = st.columns([5, 1])
             
@@ -485,9 +262,6 @@ with col2:
                     st.session_state.ticker_color_map.pop(ticker, None)
                     st.rerun()
 
-
-# ==============================================================================
-
 # Bottom Section
 col1, col2 = st.columns([100, 0.001])
 
@@ -499,132 +273,68 @@ with col1:
         for col in range(6):
             with cols[col]:
                 if hasattr(st.session_state, 'pair_data') and not st.session_state.pair_data.empty and st.session_state.should_update_stats:
-                    ticker1 = st.session_state.ticker_pair[0]
-                    ticker2 = st.session_state.ticker_pair[1]
-                    
-                    # Calculate returns and spreads
-                    returns1 = st.session_state.pair_data[f'adj_close_{ticker1}'].pct_change()
-                    returns2 = st.session_state.pair_data[f'adj_close_{ticker2}'].pct_change()
-                    spread = st.session_state.pair_data[f'adj_close_{ticker1}'] - st.session_state.pair_data[f'adj_close_{ticker2}']
-                    
-                    # Calculate hedge ratio (beta) using OLS regression
-                    X = sm.add_constant(st.session_state.pair_data[f'adj_close_{ticker2}'])
-                    y = st.session_state.pair_data[f'adj_close_{ticker1}']
-                    model = sm.OLS(y, X).fit()
-                    beta = model.params.iloc[1]  # Get the second parameter (beta)
-                    
-                    # Calculate ADF test statistics
-                    adf_result = adfuller(spread.dropna())
-                    adf_stat = adf_result[0]
-                    p_value = adf_result[1]
-                    
-                    # Calculate half-life of mean reversion
-                    spread_lag = spread.shift(1)
-                    spread_ret = spread - spread_lag
-                    spread_lag = spread_lag.dropna()
-                    spread_ret = spread_ret.dropna()
-                    half_life_model = sm.OLS(spread_ret, sm.add_constant(spread_lag)).fit()
-                    half_life = -np.log(2) / half_life_model.params.iloc[1] if half_life_model.params.iloc[1] < 0 else np.nan
-                    
-                    # Calculate z-score
-                    z_score = (spread - spread.mean()) / spread.std()
-                    current_z = z_score.iloc[-1]
-                    
-                    # Calculate number of trades (crossings of mean)
-                    mean_crossings = np.sum(np.diff(np.signbit(spread - spread.mean())))
-                    
-                    # Calculate performance metrics
-                    cum_return = (st.session_state.pair_data[f'adj_close_{ticker1}'].iloc[-1] / 
-                               st.session_state.pair_data[f'adj_close_{ticker1}'].iloc[0] - 1) * 100
-                    annual_return = ((1 + cum_return/100) ** (252/len(st.session_state.pair_data)) - 1) * 100
-                    vol = returns1.std() * np.sqrt(252) * 100
-                    sharpe = annual_return / vol if vol != 0 else 0
-                    
-                    # Calculate Sortino Ratio (using negative returns only)
-                    neg_returns = returns1[returns1 < 0]
-                    downside_vol = neg_returns.std() * np.sqrt(252) * 100
-                    sortino = annual_return / downside_vol if downside_vol != 0 else 0
-                    
-                    # Calculate Calmar Ratio
-                    max_drawdown = ((st.session_state.pair_data[f'adj_close_{ticker1}'] / 
-                                  st.session_state.pair_data[f'adj_close_{ticker1}'].expanding().max() - 1) * 100).min()
-                    calmar = abs(annual_return / max_drawdown) if max_drawdown != 0 else 0
-                    
-                    # Calculate VaR and CVaR
-                    var_95 = np.percentile(returns1, 5) * 100
-                    cvar_95 = returns1[returns1 <= np.percentile(returns1, 5)].mean() * 100
-                    
-                    # Calculate Profit Factor
-                    gross_profit = returns1[returns1 > 0].sum()
-                    gross_loss = abs(returns1[returns1 < 0].sum())
-                    profit_factor = gross_profit / gross_loss if gross_loss != 0 else 0
-                    
-                    # Calculate MAE
-                    rolling_max = st.session_state.pair_data[f'adj_close_{ticker1}'].expanding().max()
-                    mae = ((st.session_state.pair_data[f'adj_close_{ticker1}'] - rolling_max) / rolling_max * 100).min()
-                    
-                    # Calculate Win Rate
-                    win_rate = (returns1 > 0).mean() * 100
-                    
-                    # Calculate Mean Trade Duration
-                    trade_duration = len(st.session_state.pair_data) / mean_crossings if mean_crossings > 0 else 0
+                    stats = calculate_pair_statistics(
+                        st.session_state.pair_data,
+                        st.session_state.ticker_pair[0],
+                        st.session_state.ticker_pair[1]
+                    )
                     
                     if row == 0:
                         if col == 0:
-                            st.metric("Cumulative Return", f"{cum_return:.2f}%", 
+                            st.metric("Cumulative Return", f"{stats['cum_return']:.2f}%", 
                                     help="Total return over the entire period, expressed as a percentage")
                         elif col == 1:
-                            st.metric("Annualized Return", f"{annual_return:.2f}%",
+                            st.metric("Annualized Return", f"{stats['annual_return']:.2f}%",
                                     help="Average yearly return, annualized from the total period")
                         elif col == 2:
-                            st.metric("Sharpe Ratio", f"{sharpe:.2f}",
+                            st.metric("Sharpe Ratio", f"{stats['sharpe']:.2f}",
                                     help="Risk-adjusted return measure. Higher values indicate better risk-adjusted performance")
                         elif col == 3:
-                            st.metric("Sortino Ratio", f"{sortino:.2f}",
+                            st.metric("Sortino Ratio", f"{stats['sortino']:.2f}",
                                     help="Risk-adjusted return measure that only considers downside volatility")
                         elif col == 4:
-                            st.metric("Calmar Ratio", f"{calmar:.2f}",
+                            st.metric("Calmar Ratio", f"{stats['calmar']:.2f}",
                                     help="Annualized return divided by maximum drawdown. Higher values indicate better risk-adjusted returns")
                         else:
-                            st.metric("Max Drawdown", f"{max_drawdown:.2f}%",
+                            st.metric("Max Drawdown", f"{stats['max_drawdown']:.2f}%",
                                     help="Largest percentage drop from a peak to a subsequent trough")
                     elif row == 1:
                         if col == 0:
-                            st.metric("VaR (95%)", f"{var_95:.2f}%",
+                            st.metric("VaR (95%)", f"{stats['var_95']:.2f}%",
                                     help="Value at Risk at 95% confidence level - maximum expected loss over a given time period")
                         elif col == 1:
-                            st.metric("CVaR (95%)", f"{cvar_95:.2f}%",
+                            st.metric("CVaR (95%)", f"{stats['cvar_95']:.2f}%",
                                     help="Conditional Value at Risk - average of losses beyond the VaR threshold")
                         elif col == 2:
-                            st.metric("Profit Factor", f"{profit_factor:.2f}",
+                            st.metric("Profit Factor", f"{stats['profit_factor']:.2f}",
                                     help="Ratio of gross profits to gross losses. Values > 1 indicate profitable trading")
                         elif col == 3:
-                            st.metric("MAE", f"{mae:.2f}%",
+                            st.metric("MAE", f"{stats['mae']:.2f}%",
                                     help="Maximum Adverse Excursion - largest percentage drop from entry to lowest point")
                         elif col == 4:
-                            st.metric("ADF Statistic", f"{adf_stat:.4f}",
+                            st.metric("ADF Statistic", f"{stats['adf_stat']:.4f}",
                                     help="Augmented Dickey-Fuller test statistic for testing stationarity of the spread")
                         else:
-                            st.metric("P-value", f"{p_value:.4f}",
+                            st.metric("P-value", f"{stats['p_value']:.4f}",
                                     help="P-value from ADF test. Lower values suggest stronger evidence of mean reversion")
                     else:
                         if col == 0:
-                            st.metric("Hedge Ratio", f"{beta:.4f}",
+                            st.metric("Hedge Ratio", f"{stats['beta']:.4f}",
                                     help="Optimal ratio of the two assets for hedging, calculated using OLS regression")
                         elif col == 1:
-                            st.metric("Half-life (days)", f"{half_life:.1f}" if not np.isnan(half_life) else "N/A",
+                            st.metric("Half-life (days)", f"{stats['half_life']:.1f}" if not pd.isna(stats['half_life']) else "N/A",
                                     help="Expected time for the spread to revert half way back to its mean")
                         elif col == 2:
-                            st.metric("# of Trades", f"{mean_crossings}",
+                            st.metric("# of Trades", f"{stats['mean_crossings']}",
                                     help="Number of times the spread crosses its mean, indicating potential trading opportunities")
                         elif col == 3:
-                            st.metric("Win Rate", f"{win_rate:.1f}%",
+                            st.metric("Win Rate", f"{stats['win_rate']:.1f}%",
                                     help="Percentage of profitable trades")
                         elif col == 4:
-                            st.metric("Mean Duration", f"{trade_duration:.1f} days",
+                            st.metric("Mean Duration", f"{stats['trade_duration']:.1f} days",
                                     help="Average holding period for trades")
                         else:
-                            st.metric("Z-score", f"{current_z:.2f}",
+                            st.metric("Z-score", f"{stats['current_z']:.2f}",
                                     help="Current spread's deviation from mean in standard deviations")
                 else:
                     if row == 0:
@@ -684,8 +394,6 @@ with col1:
                         else:
                             st.metric("Z-score", "N/A",
                                     help="Current spread's deviation from mean in standard deviations")
-                    
 
     # Reset the update flag after displaying statistics
-    st.session_state.should_update_stats = False
-
+    st.session_state.should_update_stats = False 
